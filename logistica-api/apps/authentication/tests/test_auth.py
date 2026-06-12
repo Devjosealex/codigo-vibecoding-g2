@@ -128,3 +128,168 @@ class AuthEndpointTest(APITestCase):
         self.client.credentials()
         response = self.client.get(self.PROTECTED_URL)
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+# ------------------------------------------------------------------ #
+# Tests para JWT custom con is_superuser                              #
+# ------------------------------------------------------------------ #
+
+class CustomJWTPayloadTest(APITestCase):
+    """Verifica que is_superuser se inyecta en el payload del JWT."""
+
+    TOKEN_URL = '/api/auth/token/'
+
+    def setUp(self):
+        self.regular_user = User.objects.create_user(
+            username='regular', password='Pass123!', is_superuser=False
+        )
+        self.super_user = User.objects.create_user(
+            username='superadmin', password='Pass123!', is_superuser=True
+        )
+
+    def _decode_payload(self, token):
+        import base64
+        import json
+        payload_b64 = token.split('.')[1]
+        # Agregar padding necesario para base64
+        padding = 4 - len(payload_b64) % 4
+        if padding != 4:
+            payload_b64 += '=' * padding
+        return json.loads(base64.b64decode(payload_b64))
+
+    def test_token_contains_is_superuser_false_for_regular_user(self):
+        resp = self.client.post(self.TOKEN_URL, {'username': 'regular', 'password': 'Pass123!'}, format='json')
+        self.assertEqual(resp.status_code, 200)
+        payload = self._decode_payload(resp.data['access'])
+        self.assertIn('is_superuser', payload)
+        self.assertFalse(payload['is_superuser'])
+
+    def test_token_contains_is_superuser_true_for_superadmin(self):
+        resp = self.client.post(self.TOKEN_URL, {'username': 'superadmin', 'password': 'Pass123!'}, format='json')
+        self.assertEqual(resp.status_code, 200)
+        payload = self._decode_payload(resp.data['access'])
+        self.assertIn('is_superuser', payload)
+        self.assertTrue(payload['is_superuser'])
+
+
+# ------------------------------------------------------------------ #
+# Tests para IsSuperAdmin permission                                   #
+# ------------------------------------------------------------------ #
+
+class UserViewSetSuperAdminTest(APITestCase):
+    """Verifica que UserViewSet es inaccesible a usuarios no-superadmin."""
+
+    USERS_URL = '/api/v1/auth/users/'
+
+    def setUp(self):
+        self.regular_user = User.objects.create_user(username='regular2', password='Pass123!')
+        self.super_user = User.objects.create_user(
+            username='superadmin2', password='Pass123!', is_superuser=True
+        )
+
+    def _get_token(self, username, password):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        user = User.objects.get(username=username)
+        return str(RefreshToken.for_user(user).access_token)
+
+    def test_unauthenticated_returns_401(self):
+        resp = self.client.get(self.USERS_URL)
+        self.assertEqual(resp.status_code, 401)
+
+    def test_regular_user_returns_403(self):
+        token = self._get_token('regular2', 'Pass123!')
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+        resp = self.client.get(self.USERS_URL)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_superadmin_can_list_users(self):
+        token = self._get_token('superadmin2', 'Pass123!')
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+        resp = self.client.get(self.USERS_URL)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('results', resp.data)
+
+    def test_superadmin_can_create_user(self):
+        token = self._get_token('superadmin2', 'Pass123!')
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+        resp = self.client.post(self.USERS_URL, {
+            'username': 'newuser',
+            'password': 'NewPass123!',
+            'email': 'new@test.com',
+        }, format='json')
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data['username'], 'newuser')
+
+    def test_set_groups_assigns_groups_to_user(self):
+        from django.contrib.auth.models import Group
+        group = Group.objects.create(name='Operadores')
+        target_user = User.objects.create_user(username='target', password='Pass123!')
+        token = self._get_token('superadmin2', 'Pass123!')
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+        resp = self.client.post(
+            f'/api/v1/auth/users/{target_user.id}/set_groups/',
+            {'group_ids': [group.id]},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        target_user.refresh_from_db()
+        self.assertIn(group, target_user.groups.all())
+
+
+class GroupViewSetTest(APITestCase):
+    """Verifica CRUD de grupos para superadmin."""
+
+    GROUPS_URL = '/api/v1/auth/groups/'
+
+    def setUp(self):
+        self.super_user = User.objects.create_user(
+            username='superadmin3', password='Pass123!', is_superuser=True
+        )
+        from rest_framework_simplejwt.tokens import RefreshToken
+        token = str(RefreshToken.for_user(self.super_user).access_token)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+
+    def test_superadmin_can_list_groups(self):
+        resp = self.client.get(self.GROUPS_URL)
+        self.assertEqual(resp.status_code, 200)
+
+    def test_superadmin_can_create_group(self):
+        resp = self.client.post(self.GROUPS_URL, {'name': 'Supervisores'}, format='json')
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data['name'], 'Supervisores')
+
+    def test_superadmin_can_delete_group(self):
+        from django.contrib.auth.models import Group
+        group = Group.objects.create(name='ToDelete')
+        resp = self.client.delete(f'{self.GROUPS_URL}{group.id}/')
+        self.assertEqual(resp.status_code, 204)
+
+
+class PermissionListViewTest(APITestCase):
+    """Verifica que PermissionListView lista permisos solo para superadmin."""
+
+    PERMS_URL = '/api/v1/auth/permissions/'
+
+    def setUp(self):
+        self.regular_user = User.objects.create_user(username='regular3', password='Pass123!')
+        self.super_user = User.objects.create_user(
+            username='superadmin4', password='Pass123!', is_superuser=True
+        )
+
+    def _get_token(self, user):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        return str(RefreshToken.for_user(user).access_token)
+
+    def test_regular_user_cannot_list_permissions(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self._get_token(self.regular_user)}')
+        resp = self.client.get(self.PERMS_URL)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_superadmin_can_list_permissions(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self._get_token(self.super_user)}')
+        resp = self.client.get(self.PERMS_URL)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsInstance(resp.data, list)
+        if resp.data:
+            self.assertIn('id', resp.data[0])
+            self.assertIn('codename', resp.data[0])

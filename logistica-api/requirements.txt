@@ -19,3 +19,7 @@ rpds-py==0.30.0
 sqlparse==0.5.5
 tzdata==2026.2
 uritemplate==4.2.0
+
+# production
+gunicorn==23.0.0
+whitenoise==6.8.2
