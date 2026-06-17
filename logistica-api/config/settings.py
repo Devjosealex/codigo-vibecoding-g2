@@ -122,7 +122,7 @@ SIMPLE_JWT = {
 # CORS
 CORS_ALLOWED_ORIGINS = config(
     'CORS_ALLOWED_ORIGINS',
-    default='http://localhost:3000,http://localhost:5173',
+    default='http://localhost:3000,http://localhost:5173,https://logistica-frontend-nu.vercel.app/',
     cast=Csv(),
 )
 
