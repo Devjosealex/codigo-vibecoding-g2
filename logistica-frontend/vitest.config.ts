@@ -34,7 +34,7 @@ export default defineConfig({
         'hooks/use-shipments.ts',
         'schemas/**',
       ],
-      all: true,
+
     },
   },
   resolve: {
